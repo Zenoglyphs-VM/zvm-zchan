@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#06090a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f7faf9" media="(prefers-color-scheme: light)" />
+    <title>/z/ - zchan</title>
+    <meta name="description" content="An anonymous image board kept in a contract on the ZVM. Every post is a transaction; nothing sits on a server." />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <script>
+      // The explorer's theme key, so a visitor's choice follows them here.
+      try {
+        var t = localStorage.getItem('zvm.theme')
+        if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap top-row">
+        <a class="brand" href="#/" title="zchan" aria-label="zchan, the board's index">/z/</a>
+        <nav class="links">
+          <a href="#/">Index</a>
+          <a href="#/catalog">Catalog</a>
+          <a href="#/handle">Handle</a>
+        </nav>
+        <div class="top-actions">
+          <a id="new-posts" class="new-posts" href="#/" hidden></a>
+          <span id="live" class="live" title="The chain block this page last read"><i></i><span id="live-text">connecting</span></span>
+          <span id="jan-badge" class="pill ok" hidden>janitor</span>
+          <a id="about-link" class="icon-btn" href="#/about" title="About" aria-label="About">
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5.5" />
+              <circle cx="12" cy="7.6" r="0.4" fill="currentColor" />
+            </svg>
+          </a>
+          <button id="theme" class="icon-btn" type="button" title="Light or dark" aria-label="Switch theme">
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <circle cx="12" cy="12" r="4.2" />
+              <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6" />
+            </svg>
+          </button>
+          <button id="connect" class="btn btn-small" type="button">Connect</button>
+          <button id="disconnect" class="icon-btn" type="button" title="Disconnect" aria-label="Disconnect" hidden>×</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div id="form-slot"></div>
+      <div id="bar"></div>
+      <div id="view"></div>
+
+    </main>
+
+    <script type="module" src="./src/boot.ts"></script>
+  </body>
+</html>

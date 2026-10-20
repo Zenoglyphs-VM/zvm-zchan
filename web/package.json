@@ -1,0 +1,24 @@
+{
+  "name": "zvm-zchan-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "zchan's page: one anonymous image board kept in a contract on the ZVM, read straight from the chain and posted to with an EVM wallet.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "typecheck": "tsc",
+    "preview": "vite preview",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.2.5",
+    "@fontsource-variable/space-grotesk": "^5.2.5",
+    "viem": "^2.56.5"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.11.0",
+    "typescript": "^5.7.3",
+    "vite": "^7.3.1"
+  }
+}

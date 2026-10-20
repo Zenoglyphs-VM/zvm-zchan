@@ -1,0 +1,15 @@
+{
+  "name": "zvm-zchan-contracts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "keys": "node scripts/keys.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "solc": "0.8.19",
+    "viem": "^2.56.5"
+  }
+}
