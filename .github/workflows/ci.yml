@@ -24,6 +24,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - run: npm ci
+      - run: npm run test:types
+      # Use the runner's installed browser; puppeteer-core downloads none.
+      - run: npm run test:browser
       # The build refuses to run without its endpoints; the example has them.
       - run: cp ../.env.example ../.env
       - run: npm run build

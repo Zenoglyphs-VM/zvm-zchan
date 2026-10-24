@@ -30,6 +30,7 @@ export interface Post {
   subject: string
   body: string
   block: bigint
+  blockHash: Hex
   time: number
   tx: Hex
   // When this page first saw it, if that was after the first load: new posts
@@ -66,31 +67,47 @@ export const janitors = new Set<string>() // lowercase
 export let owner: Address | null = null
 export let head = 0n
 export let loaded = false
-let scanned = START_BLOCK - 1n
+let checkpoint: {number: bigint; hash: Hex} | null = null
 
 export interface Scan {
   fresh: number[] // ids of posts first seen in this scan
   changed: boolean // whether anything on screen may differ
+  reset: boolean // a first load or a complete canonical-branch rebuild
 }
 const listeners = new Set<(s: Scan) => void>()
 export const onChange = (fn: (s: Scan) => void) => listeners.add(fn)
 
 export const QUOTE = />>(\d{1,12})/g
 
-// A scan reports the posts that are new, and whether anything else (a
-// removal, a janitor, the owner) changed.
-let changed = false
+interface State {
+  posts: Map<number, Post>
+  removed: Set<number>
+  deleted: Set<number>
+  backlinks: Map<number, number[]>
+  janitors: Set<string>
+  owner: Address | null
+}
+const empty = (): State => ({posts: new Map(), removed: new Set(), deleted: new Set(), backlinks: new Map(), janitors: new Set(), owner: null})
+function copy(): State {
+  return {posts: new Map(posts), removed: new Set(removed), deleted: new Set(deleted),
+    backlinks: new Map([...backlinks].map(([id, refs]) => [id, [...refs]])), janitors: new Set(janitors), owner}
+}
 
-async function apply(logs: RawLog[]): Promise<number[]> {
-  logs.sort((a, b) => Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) || Number(a.logIndex) - Number(b.logIndex))
+async function apply(state: State, logs: RawLog[], reset: boolean): Promise<Scan> {
+  logs.sort((a, b) => {
+    const block = BigInt(a.blockNumber) - BigInt(b.blockNumber)
+    const index = BigInt(a.logIndex) - BigInt(b.logIndex)
+    return block < 0n ? -1 : block > 0n ? 1 : index < 0n ? -1 : index > 0n ? 1 : 0
+  })
   const fresh: number[] = []
+  let changed = reset
   for (const l of logs) {
-    if (l.removed) continue
     const ev = decodeEventLog({abi: zchanAbi, data: l.data, topics: l.topics as [Hex, ...Hex[]]})
     if (ev.eventName === 'Posted') {
       const a = ev.args
       const id = Number(a.id)
-      if (posts.has(id)) continue
+      if (!Number.isSafeInteger(id)) throw new Error('The post ID is too large for this page.')
+      if (state.posts.has(id)) continue
       const p: Post = {
         id,
         thread: Number(a.thread),
@@ -101,60 +118,95 @@ async function apply(logs: RawLog[]): Promise<number[]> {
         subject: a.subject,
         body: a.body,
         block: BigInt(l.blockNumber),
+        blockHash: l.blockHash,
         time: await logTime(l),
         tx: l.transactionHash,
-        arrived: loaded ? Date.now() : undefined,
+        arrived: loaded && !reset ? Date.now() : undefined,
       }
-      posts.set(id, p)
+      state.posts.set(id, p)
       fresh.push(id)
       for (const q of new Set([...p.body.matchAll(QUOTE)].map((m) => Number(m[1])))) {
         if (q >= id) continue
-        const list = backlinks.get(q) ?? []
+        const list = state.backlinks.get(q) ?? []
         list.push(id)
-        backlinks.set(q, list)
+        state.backlinks.set(q, list)
       }
     } else if (ev.eventName === 'Removed') {
-      if (ev.args.removed) removed.add(Number(ev.args.id))
-      else removed.delete(Number(ev.args.id))
+      if (ev.args.removed) state.removed.add(Number(ev.args.id))
+      else state.removed.delete(Number(ev.args.id))
       changed = true
     } else if (ev.eventName === 'Deleted') {
-      deleted.add(Number(ev.args.id))
+      state.deleted.add(Number(ev.args.id))
       changed = true
     } else if (ev.eventName === 'JanitorSet') {
-      if (ev.args.active) janitors.add(ev.args.janitor.toLowerCase())
-      else janitors.delete(ev.args.janitor.toLowerCase())
+      if (ev.args.active) state.janitors.add(ev.args.janitor.toLowerCase())
+      else state.janitors.delete(ev.args.janitor.toLowerCase())
       changed = true
     } else if (ev.eventName === 'OwnerChanged') {
-      owner = ev.args.owner
+      state.owner = ev.args.owner
       changed = true
     }
   }
-  return fresh
+  return {fresh, changed: changed || fresh.length > 0, reset}
 }
 
-// scan reads everything since the last scan, re-reading the last two blocks
-// in case the head moved under the previous read. Re-reading is harmless:
-// posts are keyed by id, and a removal is a state, not a toggle.
+// Keep an accepted block hash, not an overlap window. If that block is no
+// longer canonical (including a shorter head), rebuild from deployment.
+// All reads/reduction finish and their block hashes are checked before any
+// exported state changes. A failed/branch-changing read leaves the last view.
 let scanning: Promise<void> | null = null
 export function scan(): Promise<void> {
   scanning ??= (async () => {
     try {
-      const tip = await reader.getBlockNumber()
-      head = tip
-      const from = scanned - 1n > START_BLOCK ? scanned - 1n : START_BLOCK
-      if (tip < from) return
+      const tip = await reader.getBlockNumber({cacheTime: 0})
+      const anchor = await reader.getBlock({blockNumber: tip})
+      if (!anchor.hash || anchor.number !== tip) throw new Error('The node did not identify the head block.')
+      const reset = !checkpoint || tip < checkpoint.number ||
+        (await reader.getBlock({blockNumber: checkpoint.number})).hash !== checkpoint.hash
+      const from = reset ? START_BLOCK : checkpoint!.number + 1n
       const logs: RawLog[] = []
+      const blocks = new Map<bigint, Hex>()
       for (let a = from; a <= tip; a += 50_000n) {
         const b = a + 49_999n < tip ? a + 49_999n : tip
-        logs.push(...(await getLogs(a, b, [[T.posted, T.removed, T.deleted, T.janitor, T.owner]])))
+        for (const l of await getLogs(a, b, [[T.posted, T.removed, T.deleted, T.janitor, T.owner]])) {
+          const n = BigInt(l.blockNumber)
+          if (n < a || n > b || l.removed || !/^0x[\da-f]{64}$/i.test(l.blockHash) ||
+            (blocks.has(n) && blocks.get(n) !== l.blockHash)) throw new Error('The node returned inconsistent board logs.')
+          blocks.set(n, l.blockHash)
+          logs.push(l)
+        }
       }
-      changed = false
-      const fresh = await apply(logs)
-      scanned = tip
-      const first = !loaded
+      // Most polls contain no events: retain the existing maps rather than
+      // copying and rebuilding the entire board just to advance its head.
+      const candidate = reset ? empty() : logs.length ? copy() : null
+      const update = candidate ? await apply(candidate, logs, reset) : {fresh: [], changed: false, reset: false}
+      for (const [number, hash] of blocks) {
+        if ((await reader.getBlock({blockNumber: number})).hash !== hash) throw new Error('The board changed while it was being read. Try again.')
+      }
+      if ((await reader.getBlock({blockNumber: tip})).hash !== anchor.hash ||
+        (!reset && (await reader.getBlock({blockNumber: checkpoint!.number})).hash !== checkpoint!.hash)) {
+        throw new Error('The board changed while it was being read. Try again.')
+      }
+      if (reset) invalidateImages()
+      if (candidate) {
+        // Keep exported map/set identities so views retain live references.
+        for (const key of ['posts', 'backlinks'] as const) {
+          const target = key === 'posts' ? posts : backlinks
+          target.clear()
+          for (const [id, value] of candidate[key]) (target as Map<number, Post | number[]>).set(id, value)
+        }
+        for (const key of ['removed', 'deleted', 'janitors'] as const) {
+          const target = key === 'removed' ? removed : key === 'deleted' ? deleted : janitors
+          target.clear()
+          for (const value of candidate[key]) (target as Set<number | string>).add(value)
+        }
+        owner = candidate.owner
+      }
+      head = tip
+      checkpoint = {number: tip, hash: anchor.hash}
       loaded = true
       // Called on every scan, new posts or not, so the head shown moves.
-      listeners.forEach((fn) => fn({fresh, changed: changed || first || fresh.length > 0}))
+      listeners.forEach((fn) => fn(update))
     } finally {
       scanning = null
     }
@@ -227,6 +279,18 @@ const images = new Map<number, Promise<Loaded>>()
 const done = new Map<number, Loaded>()
 let queue: {id: number; resolve: (l: Loaded) => void}[] = []
 let timer = 0
+let imageEpoch = 0
+
+function invalidateImages() {
+  imageEpoch++
+  clearTimeout(timer)
+  timer = 0
+  for (const result of done.values()) if ('url' in result) URL.revokeObjectURL(result.url)
+  images.clear()
+  done.clear()
+  for (const item of queue) item.resolve({error: 'The board changed. Load the image again.'})
+  queue = []
+}
 
 // image resolves to a post's image as a blob URL. Requests made together are
 // fetched together: one eth_getLogs for up to 24 images, filtered by id.
@@ -235,7 +299,7 @@ export function image(id: number): Promise<Loaded> {
   if (!p) {
     p = new Promise<Loaded>((resolve) => queue.push({id, resolve}))
     images.set(id, p)
-    p.then((l) => done.set(id, l))
+    p.then((l) => {if (images.get(id) === p) done.set(id, l)})
     if (!timer) timer = window.setTimeout(flush, 25)
   }
   return p
@@ -247,6 +311,8 @@ async function flush() {
   const batch = queue.splice(0, 24)
   if (queue.length) timer = window.setTimeout(flush, 0)
   if (!batch.length) return
+  const epoch = imageEpoch
+  const original = new Map(batch.map((b) => [b.id, posts.get(b.id)]))
   const blocks = batch.map((b) => posts.get(b.id)?.block ?? START_BLOCK)
   const from = blocks.reduce((a, b) => (b < a ? b : a))
   const to = blocks.reduce((a, b) => (b > a ? b : a))
@@ -255,18 +321,27 @@ async function flush() {
     const logs = await getLogs(from, to, [T.image, batch.map((b) => pad(toHex(b.id)))])
     for (const l of logs) {
       const ev = decodeEventLog({abi: zchanAbi, data: l.data, topics: l.topics as [Hex, ...Hex[]]})
-      if (ev.eventName === 'Image') found.set(Number(ev.args.id), ev.args.data)
+      if (ev.eventName === 'Image') {
+        const id = Number(ev.args.id), post = original.get(id)
+        if (post && !l.removed && l.blockHash === post.blockHash && l.transactionHash === post.tx &&
+          BigInt(l.blockNumber) === post.block && ev.args.data.length === 2 + post.imageBytes * 2) found.set(id, ev.args.data)
+      }
     }
   } catch (err: any) {
     for (const b of batch) {
-      images.delete(b.id)
+      if (epoch === imageEpoch) images.delete(b.id)
       b.resolve({error: err?.shortMessage ?? 'the node did not answer'})
     }
+    return
+  }
+  if (epoch !== imageEpoch) {
+    for (const b of batch) b.resolve({error: 'The board changed. Load the image again.'})
     return
   }
   for (const b of batch) {
     const data = found.get(b.id)
     if (!data) {
+      images.delete(b.id)
       b.resolve({error: 'image not found'})
       continue
     }
