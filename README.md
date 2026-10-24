@@ -25,6 +25,21 @@ No node is built in. `VITE_ZVM_NODE` names the node the page reads and
 scripts read `ZVM_RPC`. `.env.example` has
 a local [zvm-devnet](https://github.com/Zenoglyphs-VM/zvm-devnet)'s.
 
+## Isolated contract tests
+
+With Node 22 or later, no RPC or deployment record is needed:
+
+```sh
+npm ci --ignore-scripts --prefix contracts/test
+npm --prefix contracts run test:isolated
+```
+
+The suite freshly compiles the current source and exercises actual state
+transitions, events, moderation, handles and fee flows on an isolated EVM.
+CI also runs the real artifact build and rejects artifact/ABI drift.
+See [the test scope](contracts/test/README.md) for the models and integration
+limits. The deployed-contract check remains separate.
+
 ## Deploy
 
 Every push to `main` publishes `web/dist` to GitHub Pages (Settings, Pages,
