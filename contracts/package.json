@@ -6,7 +6,8 @@
     "build": "node scripts/build.mjs",
     "keys": "node scripts/keys.mjs",
     "deploy": "node scripts/deploy.mjs",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "test:isolated": "npm --prefix test test"
   },
   "devDependencies": {
     "solc": "0.8.19",

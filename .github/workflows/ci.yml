@@ -9,6 +9,23 @@ permissions:
 
 # Linux, as most people who build this will be on.
 jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            contracts/package-lock.json
+            contracts/test/package-lock.json
+      - run: npm ci --ignore-scripts --prefix contracts/test
+      - run: npm --prefix contracts run test:isolated
+      - run: npm ci --ignore-scripts --prefix contracts
+      - run: npm --prefix contracts run build
+      - run: git diff --exit-code -- contracts/out/ZChan.json web/src/abi.ts
+
   web:
     runs-on: ubuntu-latest
     defaults:
