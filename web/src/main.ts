@@ -414,9 +414,10 @@ document.addEventListener('visibilitychange', titleCount)
 
 // Redrawn when something changed, and once after the first read even if the
 // board is empty, to replace the loading line.
-board.onChange(({fresh, changed}) => {
+board.onChange(({fresh, changed, reset}) => {
   live(true)
   if (!changed) return
+  if (reset) seen()
   header()
   offerHandle()
   draw()

@@ -25,6 +25,7 @@ export interface RawLog {
   topics: Hex[]
   data: Hex
   blockNumber: Hex
+  blockHash: Hex
   blockTimestamp?: Hex
   transactionHash: Hex
   logIndex: Hex
@@ -35,16 +36,28 @@ export interface RawLog {
 // the node refuses it: zvm's node caps a reply at 20,000 logs, and other
 // nodes cap the range instead. A single block that still fails is an error.
 export async function getLogs(from: bigint, to: bigint, topics: (Hex | Hex[] | null)[]): Promise<RawLog[]> {
-  try {
-    return (await reader.request({
-      method: 'eth_getLogs',
-      params: [{address: ZCHAN, fromBlock: toHex(from), toBlock: toHex(to), topics}],
-    } as any)) as RawLog[]
-  } catch (err) {
-    if (to <= from) throw err
-    const mid = (from + to) / 2n
-    return [...(await getLogs(from, mid, topics)), ...(await getLogs(mid + 1n, to, topics))]
+  let requests = 0
+  async function range(a: bigint, b: bigint): Promise<RawLog[]> {
+    if (++requests > 128) throw new Error('The node could not serve this log range within 128 requests.')
+    try {
+      return (await reader.request({
+        method: 'eth_getLogs',
+        params: [{address: ZCHAN, fromBlock: toHex(a), toBlock: toHex(b), topics}],
+      } as any, {retryCount: 0})) as RawLog[]
+    } catch (err: any) {
+      // A disconnected/rate-limited node must not turn one request into a
+      // request per block. Split only an explicit range/result-size refusal.
+      let cause = err
+      let limited = false
+      for (let depth = 0; cause && depth < 8; depth++, cause = cause.cause) {
+        limited ||= cause.code === -32005 || /too many (?:logs|results)|query returned more|block range|log (?:limit|count)|response size|result.*(?:large|limit)/i.test(cause.details ?? cause.message ?? '')
+      }
+      if (b <= a || !limited) throw err
+      const mid = (a + b) / 2n
+      return [...(await range(a, mid)), ...(await range(mid + 1n, b))]
+    }
   }
+  return range(from, to)
 }
 
 // Logs from op-reth carry their block's timestamp; for a node whose logs do
@@ -52,10 +65,15 @@ export async function getLogs(from: bigint, to: bigint, topics: (Hex | Hex[] | n
 const times = new Map<string, Promise<number>>()
 export function logTime(l: RawLog): Promise<number> {
   if (l.blockTimestamp) return Promise.resolve(Number(l.blockTimestamp))
-  let t = times.get(l.blockNumber)
+  const key = l.blockHash
+  let t = times.get(key)
   if (!t) {
-    t = reader.getBlock({blockNumber: BigInt(l.blockNumber)}).then((b) => Number(b.timestamp))
-    times.set(l.blockNumber, t)
+    t = reader.getBlock({blockHash: key}).then((b) => Number(b.timestamp))
+    times.set(key, t)
+    // Failed reads can be retried; a replacement block at this height has a
+    // different key. Completed posts already retain their own timestamp.
+    void t.catch(() => {if (times.get(key) === t) times.delete(key)})
+    if (times.size > 2048) times.delete(times.keys().next().value!)
   }
   return t
 }
